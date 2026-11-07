@@ -15,8 +15,10 @@ def plugin():
         return PLUGIN
     flags = subprocess.run([llvm("llvm-config"), "--cxxflags", "--ldflags"], capture_output=True, text=True, check=True).stdout.split()
     PLUGIN.parent.mkdir(parents=True, exist_ok=True)
+    partial = PLUGIN.with_suffix(f".{os.getpid()}.dylib")
     subprocess.run([llvm("clang++"), "-shared", "-fPIC", "-O2", "-isysroot", subprocess.run(["xcrun", "--show-sdk-path"], capture_output=True, text=True).stdout.strip(),
-                    "-undefined", "dynamic_lookup", str(SRC), "-o", str(PLUGIN)] + flags, check=True)
+                    "-undefined", "dynamic_lookup", str(SRC), "-o", str(partial)] + flags, check=True)
+    os.replace(partial, PLUGIN)  # several workers can get here at once: each builds its own file
     return PLUGIN
 
 # GNU ld's --wrap and --defsym of link.py's `common` flags, applied by the pass (ld64 has neither)
