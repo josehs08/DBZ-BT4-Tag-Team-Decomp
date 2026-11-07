@@ -1,3 +1,22 @@
+# 0.1.39.5 R5
+
+- First release of this fork: updates come from josehs08/DBZ-BT4-Tag-Team-Decomp, signed with its own key.
+- Room codes use this fork's own matchmaking service.
+- Build the macOS LLVM plugin atomically during parallel compiles.
+
+<!-- bt4-update:en
+- First release of this fork: updates are published and signed by this fork.
+- Room codes now use this fork's own matchmaking service instead of the original servers.
+-->
+<!-- bt4-update:es
+- Primera versión propia: las actualizaciones las publica y firma este fork.
+- Los códigos de sala usan ahora un servicio propio, no los servidores originales.
+-->
+<!-- bt4-update:pt
+- Primeira versão própria: as atualizações são publicadas e assinadas por este fork.
+- Os códigos de sala usam agora um serviço próprio, não os servidores originais.
+-->
+
 # 0.1.39.5 R4
 
 - Restore the full single-view layout after chase-camera updates when cinematic cameras are disabled; cache each visible camera update independently of rollback rendering.

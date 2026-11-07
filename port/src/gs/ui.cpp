@@ -505,7 +505,7 @@ static const char *f1_text(const char *english) {
         {"Search again", "Volver a buscar", "Buscar novamente"},
         {"Search for a match", "Buscar partida", "Buscar partida"},
         {"Update available. Online servers are unreachable until you update.", "Hay una actualización disponible. Actualiza el juego para conectarte al modo en línea.", "Há uma atualização disponível. Atualize o jogo para se conectar ao modo online."},
-        {"You have 0.%d.%d; 0.%d.%d or newer is needed. github.com/NauTaro/DBZ-BT4-Tag-Team-Decomp/releases", "Versión instalada: 0.%d.%d. Se requiere 0.%d.%d o posterior. github.com/NauTaro/DBZ-BT4-Tag-Team-Decomp/releases", "Versão instalada: 0.%d.%d. É necessário 0.%d.%d ou posterior. github.com/NauTaro/DBZ-BT4-Tag-Team-Decomp/releases"},
+        {"You have 0.%d.%d; 0.%d.%d or newer is needed. github.com/josehs08/DBZ-BT4-Tag-Team-Decomp/releases", "Versión instalada: 0.%d.%d. Se requiere 0.%d.%d o posterior. github.com/josehs08/DBZ-BT4-Tag-Team-Decomp/releases", "Versão instalada: 0.%d.%d. É necessário 0.%d.%d ou posterior. github.com/josehs08/DBZ-BT4-Tag-Team-Decomp/releases"},
         {"Update available: release 0.%d.%d.", "Actualización disponible: versión 0.%d.%d.", "Atualização disponível: versão 0.%d.%d."},
         {"Fight a player on another computer. One of you hosts, the other joins with the host's address.", "Juega con otra persona. Un jugador crea la sala y el otro se une con su código o dirección.", "Jogue com outra pessoa. Um jogador cria a sala e o outro entra com o código ou endereço."},
         {"Player name", "Nombre del jugador", "Nome do jogador"},
@@ -1342,11 +1342,11 @@ static void build_net(void) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.35f, 1.0f));
                 ImGui::TextWrapped(f1_text("Update available. Online servers are unreachable until you update."));
                 ImGui::PopStyleColor();
-                ImGui::TextDisabled(f1_text("You have 0.%d.%d; 0.%d.%d or newer is needed. github.com/NauTaro/DBZ-BT4-Tag-Team-Decomp/releases"), mine / 100, mine % 100, min / 100, min % 100);
+                ImGui::TextDisabled(f1_text("You have 0.%d.%d; 0.%d.%d or newer is needed. github.com/josehs08/DBZ-BT4-Tag-Team-Decomp/releases"), mine / 100, mine % 100, min / 100, min % 100);
                 ImGui::Separator();
             } else if (latest > mine) {
                 ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Update available: release 0.%d.%d.", latest / 100, latest % 100);
-                ImGui::TextDisabled("github.com/NauTaro/DBZ-BT4-Tag-Team-Decomp/releases");
+                ImGui::TextDisabled("github.com/josehs08/DBZ-BT4-Tag-Team-Decomp/releases");
                 ImGui::Separator();
             }
         }
