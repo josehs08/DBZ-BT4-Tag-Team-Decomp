@@ -33,13 +33,13 @@
 #include <unistd.h>
 #endif
 
-#define MATCH_URL_DEFAULT "" /* legacy HTTP adapter requires an explicit test/operator override */
+#define MATCH_URL_DEFAULT "https://bt4-salas.josemiguelhernandezsousa.workers.dev" /* this fork's own room service */
 #include "net_match.h"
 #include "match_supabase.h"
 #include "../port_release.h"
 #include "net_relay.h"
 #include "net_sign.h"
-static int supabase_discovery(void){const char *override=SDL_getenv("BT3_MATCH_URL");return !override||!override[0];}
+static int supabase_discovery(void){return 0;} /* this fork uses its own Worker, not the upstream Supabase projects */
 
 static struct {
     SDL_Mutex *lock;
