@@ -305,6 +305,28 @@ static int auto_delay(int rttMs) {
 
 static int sMode = -1; /* 0 off, 1 host, 2 join */
 static int sSock = -1, sMe, sDelay = 2, sConnected, sLoss, sLagMs;
+/* Reconnection (this fork). When the other player's input stops, a match with a session key waits up to REJOIN_NS
+   instead of ending after QUIET_NS. Meanwhile each side sends T_REJOIN {MAGIC, T_REJOIN, key[2]} to the other side's
+   address four times a second, and a T_REJOIN with the right key from another address becomes the other player's
+   address: their connection or router changed, and the match goes on from where it stopped. The host draws the key
+   and sends it with its choices (T_CONFIG); a copy without it ends after QUIET_NS as before. */
+enum { T_REJOIN = 16 };
+#define REJOIN_NS 120000000000ull
+static uint32_t sRejoinKey[2];
+static int sRejoinKnown, sRejoinWaiting;
+static unsigned sRejoinMoves, sRejoinForeign; /* (BT3_REJOIN_DEBUG: packets dropped for coming from another address) */
+/* Testing, with BT4_RENDER_TEST=1: BT3_NET_BLACKOUT=<from ms>:<for ms> drops everything sent and received in that
+   window, counted from the match's first blank; BT3_NET_REBIND=<ms> moves this copy to a new UDP port then, as a
+   changed connection would. */
+static uint64_t sTestStartNs;
+static int sBlackFrom = -1, sBlackFor, sRebindAt = -1, sRebound;
+static int test_ms(void) {
+    return sTestStartNs == 0 ? -1 : (int)((SDL_GetTicksNS() - sTestStartNs) / 1000000ull);
+}
+static int test_blackout(void) {
+    int ms = test_ms();
+    return sBlackFrom >= 0 && ms >= sBlackFrom && ms < sBlackFrom + sBlackFor;
+}
 static struct sockaddr_in sPeer;
 static uint8_t sIn[2][RING][PAD]; /* [player][blank % RING] */
 static uint32_t sHave[2];         /* inputs known for blanks below this */
@@ -344,6 +366,15 @@ static void net_test_line(void) {
     sLoss = enabled && getenv("BT3_NET_LOSS") != NULL ? atoi(getenv("BT3_NET_LOSS")) : 0;
     sLagMs = enabled && getenv("BT3_NET_LAG") != NULL ? atoi(getenv("BT3_NET_LAG")) : 0;
     sLatencyMs = enabled && getenv("BT3_NET_LATENCY") != NULL ? atoi(getenv("BT3_NET_LATENCY")) : 0;
+    sBlackFrom = -1;
+    sRebindAt = -1;
+    if (enabled && getenv("BT3_NET_BLACKOUT") != NULL &&
+        sscanf(getenv("BT3_NET_BLACKOUT"), "%d:%d", &sBlackFrom, &sBlackFor) != 2) {
+        sBlackFrom = -1;
+    }
+    if (enabled && getenv("BT3_NET_REBIND") != NULL) {
+        sRebindAt = atoi(getenv("BT3_NET_REBIND"));
+    }
 }
 static struct { uint64_t due; int n; uint8_t data[IN_HEAD + 16 * PAD]; } sQueue[256];
 static unsigned sQueueHead, sQueueTail;
@@ -408,6 +439,9 @@ static int fw_drops(const struct sockaddr_in *from) {
 }
 
 static void net_send(const void *buf, int n, const struct sockaddr_in *to) {
+    if (test_blackout()) {
+        return; /* (testing: BT3_NET_BLACKOUT) */
+    }
     if(Lobby_RouteSend(buf,n,to))return;
     if(getenv("BT4_RENDER_TEST")&&getenv("BT4_LOBBY_TEST_NO_DIRECT")&&NetIo_SessionMode()!=0&&Lobby_Active()&&!Lobby_IsMember(to))return;
     fw_sent(to);
@@ -523,6 +557,9 @@ static int net_recv(uint8_t *pkt, int size, struct sockaddr_in *from) {
         int len = 0, n = (int)recvfrom(sSock, (char *)pkt, size, 0, (struct sockaddr *)from, &fromLen), kind;
         if (n <= 0) {
             return n;
+        }
+        if (test_blackout()) {
+            continue; /* (testing: BT3_NET_BLACKOUT drops what comes in too) */
         }
         kind = Relay_Unwrap(pkt, n, from, &data, &len);
         if (kind == 2) {
@@ -1631,7 +1668,21 @@ static int receive(void) {
         if (sMode == 3) {
             continue; /* (a spectator takes nothing else) */
         }
+        if (type == T_REJOIN) {
+            uint32_t key[2];
+            if (sConnected && sRejoinKnown && n >= 16 && !same_addr(&from, &sPeer)) {
+                memcpy(key, pkt + 8, 8);
+                if (key[0] == sRejoinKey[0] && key[1] == sRejoinKey[1]) {
+                    fprintf(stderr, "bt3: net: the other player came back from another address\n");
+                    Lobby_PeerMoved(&sPeer, &from);
+                    sPeer = from; /* (only with the session's key: nobody else can take the other player's place) */
+                    sRejoinMoves++;
+                }
+            }
+            continue;
+        }
         if (sConnected && (from.sin_addr.s_addr != sPeer.sin_addr.s_addr || from.sin_port != sPeer.sin_port)) {
+            sRejoinForeign++;
             continue; /* a match takes packets from the other player's address only: nobody else can end it or put buttons in */
         }
         got = 1;
@@ -1664,6 +1715,10 @@ static int receive(void) {
             }
             if (n >= 32 + NAME_LEN) {
                 memcpy(&sSeed, pkt + 28 + NAME_LEN, 4);
+            }
+            if (n >= 40 + NAME_LEN) {
+                memcpy(sRejoinKey, pkt + 32 + NAME_LEN, 8);
+                sRejoinKnown = 1;
             }
             sCfgGot = 2;
             net_send(ack, sizeof(ack), &from);
@@ -2182,8 +2237,15 @@ static void net_start(int role, const char *host, const char *join) {
         while (!sCfgAcked && SDL_GetTicksNS() - start < 3000000000ull) {
             uint64_t now = SDL_GetTicksNS();
             if (now - lastCfg >= 50000000ull) {
-                uint32_t cfg[8 + NAME_LEN / 4] = {MAGIC, T_CONFIG, (uint32_t)sDelay, (uint32_t)sRollMax, NET_VERSION, sRules};
+                uint32_t cfg[10 + NAME_LEN / 4] = {MAGIC, T_CONFIG, (uint32_t)sDelay, (uint32_t)sRollMax, NET_VERSION, sRules};
                 cfg[7 + NAME_LEN / 4] = sSeed;
+                if (!sRejoinKnown) {
+                    sRejoinKey[0] = (uint32_t)SDL_rand_bits() ^ (uint32_t)SDL_GetPerformanceCounter();
+                    sRejoinKey[1] = (uint32_t)SDL_rand_bits() ^ (uint32_t)(SDL_GetTicksNS() >> 7);
+                    sRejoinKnown = 1;
+                }
+                cfg[8 + NAME_LEN / 4] = sRejoinKey[0];
+                cfg[9 + NAME_LEN / 4] = sRejoinKey[1];
                 memcpy(&cfg[6], sMyName, NAME_LEN);
                 cfg[6 + NAME_LEN / 4] = sOpts[0];
                 net_send(cfg, sizeof(cfg), &sPeer);
@@ -2422,6 +2484,74 @@ static void gone_quiet(unsigned tick) {
     ended("The connection to the other player was lost.", tick);
 }
 
+/* The other player's input has not come for `waited` ns. Past QUIET_NS a match with a session key waits on: it says
+   so on screen and asks for the other side four times a second (T_REJOIN). Past REJOIN_NS, or without a key, it ends. */
+static void rejoin_wait(uint64_t waited, unsigned tick) {
+    static uint64_t lastAsk, lastSay;
+    uint64_t now = SDL_GetTicksNS();
+
+    if (waited <= QUIET_NS) {
+        return;
+    }
+    if (!sRejoinKnown || waited > REJOIN_NS) {
+        gone_quiet(tick);
+    }
+    if (!sRejoinWaiting) {
+        sRejoinWaiting = 1;
+        fprintf(stderr, "bt3: net: no input for %u s: waiting up to %u s for the other player (blank %u)\n",
+                (unsigned)(QUIET_NS / 1000000000ull), (unsigned)(REJOIN_NS / 1000000000ull), tick);
+    }
+    if (now - lastAsk > 250000000ull) {
+        uint32_t ask[4] = {MAGIC, T_REJOIN, sRejoinKey[0], sRejoinKey[1]};
+        net_send(ask, (int)sizeof(ask), &sPeer);
+        lastAsk = now;
+    }
+    if (now - lastSay > 1000000000ull) {
+        char line[128];
+        snprintf(line, sizeof(line), "Conexi\xc3\xb3n perdida con el otro jugador. Reconectando... (%u s)",
+                 (unsigned)((REJOIN_NS - waited) / 1000000000ull));
+        Port_UiBanner(line, 1500);
+        if (getenv("BT3_REJOIN_DEBUG") != NULL) {
+            fprintf(stderr, "bt3: net: rejoin: tick %u, have %u/%u, packets in %u, foreign %u, peer port %u\n", tick,
+                    sHave[0], sHave[1], sInPkts, sRejoinForeign, (unsigned)ntohs(sPeer.sin_port));
+        }
+        lastSay = now;
+    }
+}
+
+/* After a wait: a match that had been waiting for the other player says it is back. */
+static void rejoin_done(uint64_t waited, unsigned tick) {
+    if (sRejoinWaiting) {
+        sRejoinWaiting = 0;
+        fprintf(stderr, "bt3: net: the other player is back after %u s (blank %u)\n",
+                (unsigned)(waited / 1000000000ull), tick);
+        Port_UiBanner("Reconectado.", 2000);
+        Lobby_Heard();
+    }
+}
+
+/* (Testing, BT3_NET_REBIND) This copy moves to a new UDP port, as a changed connection would. */
+static void test_rebind(void) {
+    int ms = test_ms();
+    if (sRebindAt < 0 || sRebound || ms < sRebindAt) {
+        return;
+    }
+    sRebound = 1;
+#ifdef _WIN32
+    closesocket(sSock);
+    {
+        u_long on = 1;
+        sSock = (int)socket(AF_INET, SOCK_DGRAM, 0);
+        ioctlsocket(sSock, FIONBIO, &on);
+    }
+#else
+    close(sSock);
+    sSock = socket(AF_INET, SOCK_DGRAM, 0);
+    fcntl(sSock, F_SETFL, fcntl(sSock, F_GETFL, 0) | O_NONBLOCK);
+#endif
+    fprintf(stderr, "bt3: net: test: this copy moved to a new port\n");
+}
+
 /* The program ends (its window closed, the game quit: atexit) in a match: the other game is told so at once, instead
    of finding out from the silence after QUIET_NS. */
 static void bye_at_exit(void) {
@@ -2451,7 +2581,9 @@ static void roll_tick(unsigned tick) {
     if (!sRollBegun) {
         sRollBegun = 1;
         sChecked = tick; /* nothing was given to an earlier blank */
+        sTestStartNs = SDL_GetTicksNS();
     }
+    test_rebind();
     sync_note(tick); /* (the game as this blank finds it, whether the blank is new or run again) */
     if (sResim && tick >= sLive) {
         extern void PortSe_RunAgainEnds(unsigned first, unsigned live); /* snd_se.c */
@@ -2486,10 +2618,9 @@ static void roll_tick(unsigned tick) {
                 if (sGone) {
                     gone(tick);
                 }
-                if (now - t0 > QUIET_NS) {
-                    gone_quiet(tick);
-                }
+                rejoin_wait(now - t0, tick);
             }
+            rejoin_done(SDL_GetTicksNS() - t0, tick);
             wait_end(w, tick);
         }
         {   /* (see sTheirAhead) */
@@ -2933,10 +3064,9 @@ void Port_NetBeginTick(unsigned tick) {
             if (sGone) {
                 gone(tick);
             }
-            if (now - t0 > QUIET_NS) {
-                gone_quiet(tick);
-            }
+            rejoin_wait(now - t0, tick);
         }
+        rejoin_done(SDL_GetTicksNS() - t0, tick);
         wait_end(w, tick);
     }
     sWaitNs += SDL_GetTicksNS() - t0;
@@ -4282,6 +4412,10 @@ void NetIo_End(int why, const char *note) {
         sGone = why;
         snprintf(sGoneNote, sizeof(sGoneNote), "%s", note != NULL ? note : "");
     }
+}
+
+int NetIo_RejoinWaiting(void) {
+    return sRejoinWaiting;
 }
 
 int NetIo_SessionMode(void) {

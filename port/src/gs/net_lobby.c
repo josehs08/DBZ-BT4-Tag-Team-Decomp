@@ -548,6 +548,40 @@ int Lobby_ServesSpectators(void) {
     return sL.on == 1 && NetIo_SessionMode() != 0;
 }
 
+/* How long a member, or the owner, may be silent: longer while the match waits for its other player to come back
+   (net.c), so that the lobby does not end what the match is still waiting for. */
+static uint64_t quiet_ns(void) {
+    return NetIo_RejoinWaiting() ? QUIET_NS + 120 * SEC : QUIET_NS;
+}
+
+/* The match heard its other player again after a wait (net.c): the silence of that wait does not count. */
+void Lobby_Heard(void) {
+    int i;
+    uint64_t now = now_ns();
+    sL.heardNs = now;
+    for (i = 1; i < LOBBY_SLOTS; i++) {
+        if (sL.m[i].on) {
+            sL.m[i].heardNs = now;
+        }
+    }
+}
+
+/* The match took the other player's new address (net.c, T_REJOIN): the lobby follows it. */
+void Lobby_PeerMoved(const struct sockaddr_in *was, const struct sockaddr_in *now) {
+    int i;
+    if (sL.on == 2 && same(&sL.owner, was)) {
+        sL.owner = *now;
+        sL.heardNs = now_ns();
+        return;
+    }
+    for (i = 1; i < LOBBY_SLOTS; i++) {
+        if (sL.m[i].on && same(&sL.m[i].addr, was)) {
+            sL.m[i].addr = *now;
+            sL.m[i].heardNs = now_ns();
+        }
+    }
+}
+
 int Lobby_IsMember(const struct sockaddr_in *from) {
     int i;
     if (sL.on == 2) {
@@ -2184,7 +2218,7 @@ static void timers(void) {
             if (!m->on) {
                 continue;
             }
-            if (now > m->heardNs && now - m->heardNs > QUIET_NS) {
+            if (now > m->heardNs && now - m->heardNs > quiet_ns()) {
                 member_drop(k, "lost the connection to the lobby", 1);
                 continue;
             }
@@ -2257,7 +2291,7 @@ static void timers(void) {
             if (now - sL.aliveNs > SEC) {
                 alive_send();
             }
-            if (now > sL.heardNs && now - sL.heardNs > QUIET_NS) {
+            if (now > sL.heardNs && now - sL.heardNs > quiet_ns()) {
                 SDL_strlcpy(sL.error, "The connection to the lobby's owner was lost: the lobby is closed.", sizeof(sL.error));
                 sL.closedBy = 1;
                 if (NetIo_SessionMode() != 0 || NetIo_SessionStarting()) {

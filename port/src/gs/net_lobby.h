@@ -48,6 +48,9 @@ void Lobby_Pump(void);                    /* outside a session, every blank (gam
 void Lobby_SessionLeaving(void);          /* Port_NetLeave, before the goodbyes */
 int Lobby_SessionEnded(void);             /* Port_NetSessionEnd: 1 = the lobby goes on with the socket */
 int Lobby_ServesSpectators(void);         /* this copy's session sends the match to the lobby's spectators (its owner) */
+int NetIo_RejoinWaiting(void);            /* the match waits for the other player to come back (net.c) */
+void Lobby_Heard(void);                   /* the match heard its other player again: the lobby counts silence anew */
+void Lobby_PeerMoved(const struct sockaddr_in *was, const struct sockaddr_in *now); /* the other player's address changed */
 int Lobby_IsMember(const struct sockaddr_in *from); /* (the owner: one of its members; a member: the owner) */
 /* The 1v1 lobby (net.c, Port_LobbyPoll) found that the other side is a lobby: become its member. `addrs` the
    owner's addresses ("ip:port", "relay=ip:port", "seen=ip"), from a room code; or the owner's address that answered. */
