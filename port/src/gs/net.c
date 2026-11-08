@@ -314,6 +314,8 @@ enum { T_REJOIN = 16 };
 #define REJOIN_NS 120000000000ull
 static uint32_t sRejoinKey[2];
 static int sRejoinKnown, sRejoinWaiting;
+static uint64_t sRejoinCatchupNs; /* until then each input send also repeats older input (send_inputs) */
+enum { REJOIN_CATCHUP = 64 };
 static unsigned sRejoinMoves, sRejoinForeign; /* (BT3_REJOIN_DEBUG: packets dropped for coming from another address) */
 /* Testing, with BT4_RENDER_TEST=1: BT3_NET_BLACKOUT=<from ms>:<for ms> drops everything sent and received in that
    window, counted from the match's first blank; BT3_NET_REBIND=<ms> moves this copy to a new UDP port then, as a
@@ -798,10 +800,11 @@ static uint32_t sMyArrival, sTheirArrival; /* (0: not yet) */
 static int sMet;
 static char sBannerSaid[NAME_LEN + 8]; /* what session_banner last put up (empty: nothing yet in this session) */
 
-static void send_inputs(void) {
+/* One input packet: this copy's input for blanks base .. base + n - 1 (n at most REDUNDANT). */
+static void send_inputs_range(uint32_t base, uint32_t n) {
     uint8_t pkt[IN_HEAD + REDUNDANT * PAD];
     uint32_t tsend = now_ms(), techo = sEchoTs, thold = sEchoTs != 0 ? tsend - sEchoAtMs : 0;
-    uint32_t magic = MAGIC, type = T_INPUT, n = sHave[sMe] < REDUNDANT ? sHave[sMe] : REDUNDANT, base = sHave[sMe] - n, i;
+    uint32_t magic = MAGIC, type = T_INPUT, i;
     int32_t ahead = (int32_t)sTick - (int32_t)sHave[!sMe]; /* how far this copy is beyond the input it has from the other */
 
     memcpy(pkt, &magic, 4);
@@ -819,6 +822,27 @@ static void send_inputs(void) {
         memcpy(pkt + IN_HEAD + i * PAD, sIn[sMe][(base + i) % RING], PAD);
     }
     send_to_peer(pkt, (int)(IN_HEAD + n * PAD));
+}
+
+/* The newest REDUNDANT blanks of this copy's input; while a match waits for its other player, and a few seconds after,
+   also the REJOIN_CATCHUP before them: what was sent while the other side could not hear it (a changed address). */
+static void send_inputs(void) {
+    uint32_t n = sHave[sMe] < REDUNDANT ? sHave[sMe] : REDUNDANT, first;
+
+    static uint64_t lastCatchup;
+    uint64_t now = SDL_GetTicksNS();
+
+    send_inputs_range(sHave[sMe] - n, n);
+    if ((sRejoinWaiting || now < sRejoinCatchupNs) && now - lastCatchup > 50000000ull) {
+        lastCatchup = now; /* (at most twenty a second: a burst on every blank would itself lose packets) */
+        first = sHave[sMe] < REJOIN_CATCHUP ? 0 : sHave[sMe] - REJOIN_CATCHUP;
+        for (; first + REDUNDANT <= sHave[sMe] - n; first += REDUNDANT) {
+            send_inputs_range(first, REDUNDANT);
+        }
+        if (first < sHave[sMe] - n) {
+            send_inputs_range(first, sHave[sMe] - n - first);
+        }
+    }
 }
 
 /* The lines of text that are due to go to the other player (net_chat.c: each is sent a few times). */
@@ -1676,6 +1700,7 @@ static int receive(void) {
                     fprintf(stderr, "bt3: net: the other player came back from another address\n");
                     Lobby_PeerMoved(&sPeer, &from);
                     sPeer = from; /* (only with the session's key: nobody else can take the other player's place) */
+                    sRejoinCatchupNs = SDL_GetTicksNS() + 5000000000ull;
                     sRejoinMoves++;
                 }
             }
@@ -2490,6 +2515,11 @@ static void rejoin_wait(uint64_t waited, unsigned tick) {
     static uint64_t lastAsk, lastSay;
     uint64_t now = SDL_GetTicksNS();
 
+    if (waited > 1000000000ull) {
+        /* a second without the input it needs: the other side may lack older input of this copy's than the newest
+           REDUNDANT blanks each packet repeats (packets lost in a row), so the older input goes out too */
+        sRejoinCatchupNs = now + 2000000000ull;
+    }
     if (waited <= QUIET_NS) {
         return;
     }
@@ -2526,6 +2556,7 @@ static void rejoin_done(uint64_t waited, unsigned tick) {
         fprintf(stderr, "bt3: net: the other player is back after %u s (blank %u)\n",
                 (unsigned)(waited / 1000000000ull), tick);
         Port_UiBanner("Reconectado.", 2000);
+        sRejoinCatchupNs = SDL_GetTicksNS() + 5000000000ull;
         Lobby_Heard();
     }
 }
